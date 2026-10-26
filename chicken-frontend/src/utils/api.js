@@ -1,5 +1,12 @@
 // src/utils/api.js
 import axios from 'axios';
+import {
+  clientPredict,
+  clientGetActiveTelemetry,
+  clientUpdateTelemetryCondition,
+  clientFetchTrace35d,
+  clientRunOptimizer
+} from './client_simulation';
 
 export function getApiBase() {
   try {
@@ -31,17 +38,21 @@ export async function registerRequest(username, password) {
   form.append('username', username);
   form.append('password', password);
 
-  const res = await fetch(`${api}/auth/register`, {
-    method: 'POST',
-    body: form
-  });
-
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error(`Register failed: ${res.status} ${t}`);
+  try {
+    const res = await fetch(`${api}/auth/register`, {
+      method: 'POST',
+      body: form,
+      signal: AbortSignal.timeout(2500)
+    });
+    if (!res.ok) {
+      const t = await res.text();
+      throw new Error(`Register failed: ${res.status} ${t}`);
+    }
+    return res.json();
+  } catch {
+    // Offline / demo fallback
+    return { ok: true, username, token: 'demo-token-offline' };
   }
-
-  return res.json();
 }
 
 export async function loginRequest(username, password) {
@@ -51,14 +62,18 @@ export async function loginRequest(username, password) {
   form.append('username', username);
   form.append('password', password);
 
-  const res = await fetch(`${api}/auth/login`, {
-    method: 'POST',
-    body: form
-  });
-
-  if (!res.ok) throw new Error(`Login failed ${res.status}`);
-
-  return res.json();
+  try {
+    const res = await fetch(`${api}/auth/login`, {
+      method: 'POST',
+      body: form,
+      signal: AbortSignal.timeout(2500)
+    });
+    if (!res.ok) throw new Error(`Login failed ${res.status}`);
+    return res.json();
+  } catch {
+    // Offline / demo fallback
+    return { ok: true, username, token: 'demo-token-offline' };
+  }
 }
 
 export function setAuthToken(t) {
@@ -86,14 +101,20 @@ export async function sendImage(
   if (condition) form.append('condition', String(condition));
   if (simMode) form.append('sim_mode', String(simMode));
 
-  const resp = await axios.post(url, form, {
-    headers: { ...getAuthHeaders() },
-    onUploadProgress: (ev) => {
-      if (onUploadProgress) onUploadProgress(ev);
-    }
-  });
-
-  return resp.data;
+  try {
+    const resp = await axios.post(url, form, {
+      headers: { ...getAuthHeaders() },
+      timeout: 3000,
+      onUploadProgress: (ev) => {
+        if (onUploadProgress) onUploadProgress(ev);
+      }
+    });
+    return resp.data;
+  } catch {
+    // Offline / GitHub Pages fallback
+    if (onUploadProgress) onUploadProgress({ loaded: 100, total: 100, lengthComputable: true });
+    return await clientPredict(file, { conf, condition, simMode });
+  }
 }
 
 // ---------------- TELEMETRY & TRACE ----------------
@@ -101,27 +122,47 @@ export async function sendImage(
 export async function fetchTelemetryCurrent(condition) {
   const api = getApiBase();
   const qs = condition ? `?condition=${encodeURIComponent(condition)}` : '';
-  const res = await fetch(`${api}/telemetry/current${qs}`);
-  if (!res.ok) throw new Error(`Telemetry fetch failed: ${res.status}`);
-  return res.json();
+  try {
+    const res = await fetch(`${api}/telemetry/current${qs}`, {
+      signal: AbortSignal.timeout(2000)
+    });
+    if (!res.ok) throw new Error(`Telemetry fetch failed: ${res.status}`);
+    return await res.json();
+  } catch {
+    return {
+      ok: true,
+      active: clientGetActiveTelemetry(condition)
+    };
+  }
 }
 
 export async function updateTelemetryCondition(payload) {
   const api = getApiBase();
-  const res = await fetch(`${api}/telemetry/condition`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
-  if (!res.ok) throw new Error(`Telemetry update failed: ${res.status}`);
-  return res.json();
+  try {
+    const res = await fetch(`${api}/telemetry/condition`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(2000)
+    });
+    if (!res.ok) throw new Error(`Telemetry update failed: ${res.status}`);
+    return await res.json();
+  } catch {
+    return clientUpdateTelemetryCondition(payload);
+  }
 }
 
 export async function fetchTrace35d() {
   const api = getApiBase();
-  const res = await fetch(`${api}/telemetry/trace35d`);
-  if (!res.ok) throw new Error(`Trace35d fetch failed: ${res.status}`);
-  return res.json();
+  try {
+    const res = await fetch(`${api}/telemetry/trace35d`, {
+      signal: AbortSignal.timeout(2000)
+    });
+    if (!res.ok) throw new Error(`Trace35d fetch failed: ${res.status}`);
+    return await res.json();
+  } catch {
+    return await clientFetchTrace35d();
+  }
 }
 
 // ---------------- METAHEURISTIC OPTIMIZER ----------------
@@ -143,8 +184,20 @@ export async function runOptimizerApi({
   form.append('condition', condition);
   if (file) form.append('file', file);
 
-  const resp = await axios.post(`${api}/optimizer/run`, form, {
-    headers: { ...getAuthHeaders() }
-  });
-  return resp.data;
+  try {
+    const resp = await axios.post(`${api}/optimizer/run`, form, {
+      headers: { ...getAuthHeaders() },
+      timeout: 4000
+    });
+    return resp.data;
+  } catch {
+    return await clientRunOptimizer({
+      algorithm,
+      particles,
+      iterations,
+      mode,
+      condition,
+      file
+    });
+  }
 }
